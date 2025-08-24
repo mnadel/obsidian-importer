@@ -291,6 +291,12 @@ Error details: ${error.message}`);
         let text = note.noteText || '';
         let attributeRuns = note.attributeRun || [];
         
+        // Create note context for attachment processing
+        const noteContext = {
+            title: this.sanitizeFileName(title),
+            id: noteId
+        };
+        
         // Handle first line omission
         let skipFirstLine = this.omitFirstLine && text.includes('\n');
         let textOffset = 0;
@@ -318,8 +324,8 @@ Error details: ${error.message}`);
             const textSegment = text.substring(attrStart, attrEnd);
             
             if (attr.attachmentInfo) {
-                // Handle attachment
-                const attachmentMarkdown = await this.processAttachment(attr.attachmentInfo, database, keys);
+                // Handle attachment with note context
+                const attachmentMarkdown = await this.processAttachment(attr.attachmentInfo, database, keys, noteContext);
                 processedText += attachmentMarkdown;
             } else {
                 // Regular text
@@ -401,7 +407,7 @@ Error details: ${error.message}`);
         return content;
     }
     
-    async processAttachment(attachmentInfo, database, keys) {
+    async processAttachment(attachmentInfo, database, keys, noteContext = null) {
         const identifier = attachmentInfo.attachmentIdentifier;
         const typeUti = attachmentInfo.typeUti;
         
@@ -430,7 +436,7 @@ Error details: ${error.message}`);
                 case this.ANAttachment.Drawing:
                 case this.ANAttachment.DrawingLegacy:
                 case this.ANAttachment.DrawingLegacy2:
-                    return await this.exportAttachmentFile(identifier, typeUti, database, keys);
+                    return await this.exportAttachmentFile(identifier, typeUti, database, keys, null, noteContext);
                     
                 default:
                     // Regular media file (image, video, audio, etc.)
@@ -439,7 +445,7 @@ Error details: ${error.message}`);
                         WHERE zidentifier = ?
                     `, [identifier]);
                     if (mediaRow?.ZMEDIA) {
-                        return await this.exportAttachmentFile(identifier, typeUti, database, keys, mediaRow.ZMEDIA);
+                        return await this.exportAttachmentFile(identifier, typeUti, database, keys, mediaRow.ZMEDIA, noteContext);
                     }
                     return `\n\n*[Attachment: ${typeUti}]*\n\n`;
             }
@@ -590,7 +596,35 @@ Error details: ${error.message}`);
         return '';
     }
     
-    async exportAttachmentFile(identifier, typeUti, database, keys, mediaId = null) {
+    async shouldCopyAttachment(sourcePath, targetPath) {
+        try {
+            // If target doesn't exist, we should copy
+            if (!await fs.access(targetPath, fs.constants.F_OK).then(() => true).catch(() => false)) {
+                return true;
+            }
+            
+            // Compare file sizes first (quick check)
+            const sourceStats = await fs.stat(sourcePath);
+            const targetStats = await fs.stat(targetPath);
+            
+            if (sourceStats.size !== targetStats.size) {
+                return true; // Different sizes, so copy
+            }
+            
+            // If sizes are the same, compare content
+            const sourceBuffer = await fs.readFile(sourcePath);
+            const targetBuffer = await fs.readFile(targetPath);
+            
+            // Compare buffers
+            return !sourceBuffer.equals(targetBuffer);
+            
+        } catch (error) {
+            console.warn(`⚠️  Error comparing attachments: ${error.message}`);
+            return true; // On error, default to copying
+        }
+    }
+    
+    async exportAttachmentFile(identifier, typeUti, database, keys, mediaId = null, noteContext = null) {
         try {
             let row, sourcePath, outName, outExt;
             
@@ -674,28 +708,33 @@ Error details: ${error.message}`);
             const attachmentsDir = path.join(this.outputDir, 'attachments');
             await fs.mkdir(attachmentsDir, { recursive: true });
             
-            // Generate unique filename
-            let finalName = `${this.sanitizeFileName(outName)}.${outExt}`;
-            let counter = 1;
-            let finalPath = path.join(attachmentsDir, finalName);
-            
-            while (await fs.access(finalPath, fs.constants.F_OK).then(() => true).catch(() => false)) {
-                finalName = `${this.sanitizeFileName(outName)}_${counter}.${outExt}`;
-                finalPath = path.join(attachmentsDir, finalName);
-                counter++;
+            // Generate filename with note context to avoid collisions
+            let baseFileName = this.sanitizeFileName(outName);
+            if (noteContext && noteContext.title) {
+                baseFileName = `${noteContext.title}_${baseFileName}`;
             }
             
+            let finalName = `${baseFileName}.${outExt}`;
+            let finalPath = path.join(attachmentsDir, finalName);
+            
             try {
-                await fs.copyFile(fullSourcePath, finalPath);
-                this.attachmentCount++;
-                console.log(`📎 Exported attachment: ${finalName}`);
+                // Check if we should copy/overwrite based on content comparison
+                const shouldCopy = await this.shouldCopyAttachment(fullSourcePath, finalPath);
                 
-                // Set timestamps if available
-                if (row.ZCREATIONDATE || row.ZMODIFICATIONDATE) {
-                    const CORETIME_OFFSET = 978307200;
-                    const ctime = row.ZCREATIONDATE ? new Date((row.ZCREATIONDATE + CORETIME_OFFSET) * 1000) : new Date();
-                    const mtime = row.ZMODIFICATIONDATE ? new Date((row.ZMODIFICATIONDATE + CORETIME_OFFSET) * 1000) : ctime;
-                    await fs.utimes(finalPath, ctime, mtime).catch(() => {});
+                if (shouldCopy) {
+                    await fs.copyFile(fullSourcePath, finalPath);
+                    this.attachmentCount++;
+                    console.log(`📎 Exported attachment: ${finalName}`);
+                    
+                    // Set timestamps if available
+                    if (row.ZCREATIONDATE || row.ZMODIFICATIONDATE) {
+                        const CORETIME_OFFSET = 978307200;
+                        const ctime = row.ZCREATIONDATE ? new Date((row.ZCREATIONDATE + CORETIME_OFFSET) * 1000) : new Date();
+                        const mtime = row.ZMODIFICATIONDATE ? new Date((row.ZMODIFICATIONDATE + CORETIME_OFFSET) * 1000) : ctime;
+                        await fs.utimes(finalPath, ctime, mtime).catch(() => {});
+                    }
+                } else {
+                    console.log(`📎 Attachment already exists with same content: ${finalName}`);
                 }
                 
                 // Return markdown link with handwriting summary if available
