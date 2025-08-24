@@ -540,7 +540,7 @@ Error details: ${error.message}`);
                     return urlRow ? `[**${urlRow.ZTITLE}**](${urlRow.ZURLSTRING})` : '[URL Card]';
                     
                 case this.ANAttachment.Table:
-                    return '\n\n*[Table content not supported in standalone export]*\n\n';
+                    return await this.processTable(identifier, database, keys);
                     
                 case this.ANAttachment.Scan:
                 case this.ANAttachment.ModifiedScan:
@@ -564,6 +564,147 @@ Error details: ${error.message}`);
             console.warn(`⚠️  Failed to process attachment ${identifier}: ${error.message}`);
             return `\n\n*[Attachment processing failed: ${typeUti}]*\n\n`;
         }
+    }
+    
+    async processTable(identifier, database, keys) {
+        try {
+            const row = await database.get(`
+                SELECT hex(zmergeabledata1) as zhexdata 
+                FROM ziccloudsyncingobject 
+                WHERE zidentifier = ?
+            `, [identifier]);
+            
+            if (!row || !row.zhexdata) {
+                return '\n\n*[Table data not found]*\n\n';
+            }
+            
+            // Decode the protobuf table data
+            const unzipped = zlib.gunzipSync(Buffer.from(row.zhexdata, 'hex'));
+            const tableMarkdown = await this.convertTableData(unzipped);
+            return tableMarkdown || '\n\n*[Table could not be processed]*\n\n';
+            
+        } catch (error) {
+            console.warn(`⚠️  Failed to process table ${identifier}: ${error.message}`);
+            return '\n\n*[Table processing failed]*\n\n';
+        }
+    }
+    
+    async convertTableData(buffer) {
+        try {
+            // Try to decode as MergableDataProto
+            const MergableDataType = this.protobufRoot.lookupType('ciofecaforensics.MergableDataProto');
+            const mergableData = MergableDataType.decode(buffer);
+            
+            if (!mergableData.mergableDataObject?.mergeableDataObjectData) {
+                return null;
+            }
+            
+            const data = mergableData.mergableDataObject.mergeableDataObjectData;
+            const keys = data.mergeableDataObjectKeyItem || [];
+            const types = data.mergeableDataObjectTypeItem || [];
+            const uuids = (data.mergeableDataObjectUuidItem || []).map(uuid => Buffer.from(uuid).toString('hex'));
+            const objects = data.mergeableDataObjectEntry || [];
+            
+            // Find the root table object
+            const root = objects.find(e => e.customMap && types[e.customMap.type] === 'com.apple.notes.ICTable');
+            if (!root) return null;
+            
+            let rowLocations = {};
+            let rowCount = 0;
+            let columnLocations = {};
+            let columnCount = 0;
+            let cellData = null;
+            
+            // Parse the table structure
+            for (const entry of root.customMap.mapEntry) {
+                const object = objects[entry.value.objectIndex];
+                const keyName = keys[entry.key];
+                
+                switch (keyName) {
+                    case 'crRows':
+                        [rowLocations, rowCount] = this.findLocations(object, objects, uuids);
+                        break;
+                    case 'crColumns':
+                        [columnLocations, columnCount] = this.findLocations(object, objects, uuids);
+                        break;
+                    case 'cellColumns':
+                        cellData = object;
+                        break;
+                }
+            }
+            
+            if (!cellData) return null;
+            
+            // Build the table data
+            const table = Array(rowCount).fill(0).map(() => Array(columnCount));
+            
+            for (const column of cellData.dictionary.element) {
+                const columnLocation = columnLocations[this.getTargetUuid(column.key, objects, uuids)];
+                const rowData = objects[column.value.objectIndex];
+                
+                if (rowData?.dictionary?.element) {
+                    for (const row of rowData.dictionary.element) {
+                        const rowLocation = rowLocations[this.getTargetUuid(row.key, objects, uuids)];
+                        const rowContent = objects[row.value.objectIndex];
+                        
+                        if (rowLocation < rowCount && columnLocation < columnCount && rowContent) {
+                            // Extract text from the cell content
+                            let cellText = '';
+                            if (rowContent.note && rowContent.note.noteText) {
+                                cellText = rowContent.note.noteText.trim();
+                            }
+                            table[rowLocation][columnLocation] = cellText || '';
+                        }
+                    }
+                }
+            }
+            
+            // Convert to markdown table
+            let markdown = '\n';
+            for (let i = 0; i < table.length; i++) {
+                const row = table[i].map(cell => (cell || '').replace(/\|/g, '\\|')); // Escape pipes
+                markdown += `| ${row.join(' | ')} |\n`;
+                if (i === 0) {
+                    markdown += `|${' -- |'.repeat(table[0].length)}\n`;
+                }
+            }
+            return markdown + '\n';
+            
+        } catch (error) {
+            console.warn(`⚠️  Table protobuf decoding failed: ${error.message}`);
+            return null;
+        }
+    }
+    
+    findLocations(object, objects, uuids) {
+        let ordering = [];
+        let indices = {};
+        
+        if (object.orderedSet?.ordering?.array?.attachment) {
+            for (const element of object.orderedSet.ordering.array.attachment) {
+                ordering.push(Buffer.from(element.uuid).toString('hex'));
+            }
+        }
+        
+        if (object.orderedSet?.ordering?.contents?.element) {
+            for (const element of object.orderedSet.ordering.contents.element) {
+                const key = this.getTargetUuid(element.key, objects, uuids);
+                const value = this.getTargetUuid(element.value, objects, uuids);
+                
+                indices[value] = ordering.indexOf(key);
+            }
+        }
+        
+        return [indices, ordering.length];
+    }
+    
+    getTargetUuid(entry, objects, uuids) {
+        const reference = objects[entry.objectIndex];
+        if (reference?.customMap?.mapEntry?.[0]?.value?.unsignedIntegerValue !== undefined) {
+            const uuidIndex = reference.customMap.mapEntry[0].value.unsignedIntegerValue;
+            return uuids[uuidIndex];
+        }
+        return '';
     }
     
     async exportAttachmentFile(identifier, typeUti, database, keys, mediaId = null) {
