@@ -1,5 +1,5 @@
 import { FrontMatterCache, Notice, Setting, TFolder } from 'obsidian';
-import { PickedFile } from '../filesystem';
+import { PickedFile, NodePickedFile, fsPromises } from '../filesystem';
 import { FormatImporter } from '../format-importer';
 import { ATTACHMENT_EXTS, ImportContext } from '../main';
 import { serializeFrontMatter } from '../util';
@@ -132,7 +132,22 @@ export class KeepImporter extends FormatImporter {
 	async copyFile(file: PickedFile, folderPath: string) {
 		let assetFolder = await this.createFolders(folderPath);
 		let data = await file.read();
-		await this.vault.createBinary(`${assetFolder.path}/${file.name}`, data);
+		
+		// Try to preserve file timestamps if available (for local files)
+		let options: { ctime?: number, mtime?: number } | undefined = undefined;
+		if (file instanceof NodePickedFile) {
+			try {
+				const stat = await fsPromises.stat(file.filepath);
+				options = {
+					ctime: stat.ctimeMs,
+					mtime: stat.mtimeMs
+				};
+			} catch (e) {
+				// Ignore stat errors
+			}
+		}
+		
+		await this.createBinaryIfChanged(`${assetFolder.path}/${file.name}`, data, options);
 	}
 
 	async convertKeepJson(keepJson: KeepJson, folder: TFolder, filename: string) {

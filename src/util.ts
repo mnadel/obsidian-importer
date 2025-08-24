@@ -54,3 +54,20 @@ export function truncateText(text: string, limit: number, ellipses: string = '..
 
 	return text.substring(0, limit) + ellipses;
 }
+
+export function arraysEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
+	if (a.byteLength !== b.byteLength) {
+		return false;
+	}
+	
+	const view1 = new Uint8Array(a);
+	const view2 = new Uint8Array(b);
+	
+	for (let i = 0; i < view1.length; i++) {
+		if (view1[i] !== view2[i]) {
+			return false;
+		}
+	}
+	
+	return true;
+}

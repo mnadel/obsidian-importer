@@ -139,7 +139,7 @@ export class RoamJSONImporter extends FormatImporter {
 
 			// POST-PROCESS: fix block refs //
 			for (const callingBlock of toPostProcess.values()) {
-				const callingBlockStringScrubbed = await this.roamMarkupScrubber(graphFolder, attachmentsFolder, callingBlock.blockString, true);
+				const callingBlockStringScrubbed = await this.roamMarkupScrubber(graphFolder, attachmentsFolder, callingBlock.blockString, true, undefined);
 				const newCallingBlockReferences = await this.extractAndProcessBlockReferences(markdownPages, blockLocations, graphFolder, callingBlockStringScrubbed);
 
 				const callingBlockFilePath = `${graphFolder}/${callingBlock.pageName}.md`;
@@ -247,7 +247,7 @@ export class RoamJSONImporter extends FormatImporter {
 		return [blockLocations, toPostProcessblockLocations];
 	}
 
-	private async roamMarkupScrubber(graphFolder: string, attachmentsFolder: string, blockText: string, skipDownload: boolean = false): Promise<string> {
+	private async roamMarkupScrubber(graphFolder: string, attachmentsFolder: string, blockText: string, skipDownload: boolean = false, pageTimestamps?: { ctime: number, mtime: number }): Promise<string> {
 		// Remove roam-specific components
 		blockText = blockText.replace(roamSpecificMarkupRe, '');
 
@@ -283,7 +283,7 @@ export class RoamJSONImporter extends FormatImporter {
 		// download files uploaded to Roam
 		if (this.downloadAttachments && !skipDownload) {
 			if (blockText.includes('firebasestorage')) {
-				blockText = await this.downloadFirebaseFile(blockText, attachmentsFolder);
+				blockText = await this.downloadFirebaseFile(blockText, attachmentsFolder, pageTimestamps);
 			}
 		}
 		// blockText = blockText.replaceAll("{{[[table]]}}", ""); 
@@ -341,7 +341,7 @@ export class RoamJSONImporter extends FormatImporter {
 
 		if ('string' in json && json.string) {
 			const prefix = json.heading ? '#'.repeat(json.heading) + ' ' : '';
-			const scrubbed = await this.roamMarkupScrubber(graphFolder, attachmentsFolder, json.string);
+			const scrubbed = await this.roamMarkupScrubber(graphFolder, attachmentsFolder, json.string, false, { ctime: createdTimestamp, mtime: updatedTimestamp });
 			markdown.push(`${isChild ? indent + '* ' : indent}${prefix}${scrubbed}`);
 		}
 
@@ -456,7 +456,7 @@ export class RoamJSONImporter extends FormatImporter {
 		return processedString;
 	}
 
-	private async downloadFirebaseFile(line: string, attachmentsFolder: string): Promise<string> {
+	private async downloadFirebaseFile(line: string, attachmentsFolder: string, pageTimestamps?: { ctime: number, mtime: number }): Promise<string> {
 		const { progress, vault } = this;
 
 		let url = '';
@@ -514,7 +514,7 @@ export class RoamJSONImporter extends FormatImporter {
 				const response = await fetch(url, {});
 				const data = await response.arrayBuffer();
 
-				await vault.createBinary(newFilePath, data);
+				await this.createBinaryIfChanged(newFilePath, data, pageTimestamps);
 
 				progress.reportAttachmentSuccess(url);
 

@@ -96,7 +96,10 @@ export class Bear2bkImporter extends FormatImporter {
 							ctx.status('Importing asset ' + entry.name);
 							const outputPath = await this.getAttachmentStoragePath(entry.filepath);
 							const assetData = await entry.read();
-							await this.vault.createBinary(outputPath, assetData);
+							const metadata = metadataLookup[entry.parent];
+							const options = metadata?.ctime && metadata?.mtime ? 
+								{ ctime: metadata.ctime, mtime: metadata.mtime } : undefined;
+							await this.createBinaryIfChanged(outputPath, assetData, options);
 							ctx.reportAttachmentSuccess(entry.fullpath);
 						}
 						else {

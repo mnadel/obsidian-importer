@@ -547,7 +547,16 @@ export class OneNoteImporter extends FormatImporter {
 
 
 			let taggedPage = this.convertTags(parseHTML(splitContent.html));
-			let html = await this.getAllAttachments(progress, taggedPage.replace(PARAGRAPH_REGEX, '<br />'));
+			
+			// Prepare page timestamps for attachments
+			const lastModified = page?.lastModifiedDateTime ? Date.parse(page.lastModifiedDateTime) : null;
+			const created = page?.createdDateTime ? Date.parse(page.createdDateTime) : null;
+			const pageTimestamps = {
+				ctime: created ?? lastModified ?? Date.now(),
+				mtime: lastModified ?? created ?? Date.now(),
+			};
+			
+			let html = await this.getAllAttachments(progress, taggedPage.replace(PARAGRAPH_REGEX, '<br />'), pageTimestamps);
 			let parsedPage = this.styledElementToHTML(html);
 			parsedPage = this.convertInternalLinks(parsedPage);
 			parsedPage = this.convertDrawings(parsedPage);
@@ -558,12 +567,7 @@ export class OneNoteImporter extends FormatImporter {
 			const fileRef = await this.saveAsMarkdownFile(pageFolder, page.title!, mdContent);
 
 			// Add the last modified and creation time metadata
-			const lastModified = page?.lastModifiedDateTime ? Date.parse(page.lastModifiedDateTime) : null;
-			const created = page?.createdDateTime ? Date.parse(page.createdDateTime) : null;
-			const writeOptions: DataWriteOptions = {
-				ctime: created ?? lastModified ?? Date.now(),
-				mtime: lastModified ?? created ?? Date.now(),
-			};
+			const writeOptions: DataWriteOptions = pageTimestamps;
 			await this.vault.append(fileRef, '', writeOptions);
 			progress.reportNoteSuccess(page.title!);
 		}
@@ -760,7 +764,7 @@ export class OneNoteImporter extends FormatImporter {
 	}
 
 	// Download all attachments and add embedding syntax for supported file formats.
-	async getAllAttachments(progress: ImportContext, pageHTML: string): Promise<HTMLElement> {
+	async getAllAttachments(progress: ImportContext, pageHTML: string, pageTimestamps?: { ctime: number, mtime: number }): Promise<HTMLElement> {
 		const pageElement = parseHTML(pageHTML.replace(SELF_CLOSING_REGEX, '<$1$2></$1>'));
 
 		const objects: HTMLElement[] = pageElement.findAll('object');
@@ -785,7 +789,7 @@ export class OneNoteImporter extends FormatImporter {
 			else {
 				const originalName = object.getAttribute('data-attachment')!;
 				const contentLocation = object.getAttribute('data')!;
-				const filename = await this.fetchAttachment(progress, originalName, contentLocation);
+				const filename = await this.fetchAttachment(progress, originalName, contentLocation, pageTimestamps);
 
 				// Create a new <p> element with the Markdown-style link
 				const markdownLink = document.createElement('p');
@@ -803,7 +807,7 @@ export class OneNoteImporter extends FormatImporter {
 			const currentDate = moment().format('YYYYMMDDHHmmss');
 			const fileName: string = `Exported image ${currentDate}-${i}.${extension}`;
 			const contentLocation = image.getAttribute('data-fullres-src')!;
-			const outputPath = await this.fetchAttachment(progress, fileName, contentLocation);
+			const outputPath = await this.fetchAttachment(progress, fileName, contentLocation, pageTimestamps);
 			if (outputPath) {
 				image.src = encodeURI(outputPath);
 				if (!image.alt || BASE64_REGEX.test(image.alt)) {
@@ -833,7 +837,7 @@ export class OneNoteImporter extends FormatImporter {
 		return pageElement;
 	}
 
-	async fetchAttachment(progress: ImportContext, filename: string, contentLocation: string) {
+	async fetchAttachment(progress: ImportContext, filename: string, contentLocation: string, pageTimestamps?: { ctime: number, mtime: number }) {
 		// Every 7 attachments, do a few second break to prevent rate limiting
 		if (this.attachmentDownloadPauseCounter === 7) {
 			await new Promise(resolve => {
@@ -850,7 +854,7 @@ export class OneNoteImporter extends FormatImporter {
 			// We don't need to remember claimedPaths because we're writing the attachments immediately.
 			const outputPath = await this.getAvailablePathForAttachment(filename, []);
 			const data = (await this.fetchResource(contentLocation, 'file', progress));
-			await this.app.vault.createBinary(outputPath, data);
+			await this.createBinaryIfChanged(outputPath, data, pageTimestamps);
 			progress.reportAttachmentSuccess(filename);
 			return outputPath;
 		}

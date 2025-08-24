@@ -356,10 +356,16 @@ export class AppleNotesImporter extends FormatImporter {
 			const binary = await this.getAttachmentSource(this.resolvedAccounts[this.owners[row.ZNOTE]], sourcePath);
 			const attachmentPath = await this.getAvailablePathForAttachment(`${outName}.${outExt}`, []);
 
-			file = await this.vault.createBinary(
+			file = await this.createBinaryIfChanged(
 				attachmentPath, binary,
 				{ ctime: this.decodeTime(row.ZCREATIONDATE), mtime: this.decodeTime(row.ZMODIFICATIONDATE) }
 			);
+
+			if (!file) {
+				this.ctx.reportFailed(sourcePath);
+				console.error('Failed to create or find attachment file');
+				return null;
+			}
 		}
 		catch (e) {
 			this.ctx.reportFailed(sourcePath);

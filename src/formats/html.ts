@@ -275,11 +275,24 @@ export class HtmlImporter extends FormatImporter {
 		let basename = '';
 		let extension = '';
 		let data: ArrayBuffer;
+		let fileOptions: { ctime?: number, mtime?: number } | undefined = undefined;
+		
 		switch (url.protocol) {
 			case 'file:':
 				let filepath = nodeUrl.fileURLToPath(url.href);
 				({ basename, extension } = parseFilePath(filepath));
 				data = nodeBufferToArrayBuffer(await fsPromises.readFile(filepath));
+				
+				// Try to get file timestamps for local files
+				try {
+					const stat = await fsPromises.stat(filepath);
+					fileOptions = {
+						ctime: stat.ctimeMs,
+						mtime: stat.mtimeMs
+					};
+				} catch (e) {
+					// Ignore stat errors
+				}
 				break;
 			case 'https:':
 			case 'http:':
@@ -316,7 +329,7 @@ export class HtmlImporter extends FormatImporter {
 		// @ts-ignore
 		const path: string = await this.vault.getAvailablePath(attachmentFolder.getParentPrefix() + basename, extension);
 
-		return await this.vault.createBinary(path, data);
+		return await this.createBinaryIfChanged(path, data, fileOptions);
 	}
 
 

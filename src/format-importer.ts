@@ -1,7 +1,7 @@
 import { App, normalizePath, Platform, Setting, TFile, TFolder, Vault } from 'obsidian';
 import { getAllFiles, NodePickedFile, NodePickedFolder, path, parseFilePath, PickedFile, WebPickedFile } from './filesystem';
 import { ImporterModal, ImportContext, AuthCallback } from './main';
-import { sanitizeFileName } from './util';
+import { sanitizeFileName, arraysEqual } from './util';
 
 const MAX_PATH_DESCRIPTION_LENGTH = 300;
 
@@ -241,6 +241,27 @@ export abstract class FormatImporter {
 		let sanitizedName = sanitizeFileName(title);
 		// @ts-ignore
 		return await this.app.fileManager.createNewMarkdownFile(folder, sanitizedName, content);
+	}
+
+	/**
+	 * Creates a binary file only if it doesn't exist or if its contents have changed.
+	 * This prevents unnecessary file overwrites when the content is identical.
+	 */
+	async createBinaryIfChanged(filePath: string, data: ArrayBuffer, options?: { ctime?: number, mtime?: number }): Promise<TFile | null> {
+		const existingFile = this.vault.getAbstractFileByPath(filePath);
+		
+		if (existingFile && existingFile instanceof TFile) {
+			const existingData = await this.vault.readBinary(existingFile);
+			if (arraysEqual(existingData, data)) {
+				// Content is identical, no need to recreate the file
+				return existingFile;
+			}
+			// Content has changed, delete the old file first
+			await this.vault.delete(existingFile);
+		}
+		
+		// Create the new binary file
+		return await this.vault.createBinary(filePath, data, options);
 	}
 }
 

@@ -138,7 +138,20 @@ export class NotionImporter extends FormatImporter {
 					ctx.status(`Importing attachment ${file.name}`);
 
 					const data = await file.read();
-					await vault.createBinary(`${attachmentInfo.targetParentFolder}${attachmentInfo.nameWithExtension}`, data);
+					
+					// Try to get timestamps from parent file if available
+					let writeOptions: { ctime?: number, mtime?: number } | undefined = undefined;
+					if (attachmentInfo.parentIds.length > 0) {
+						const parentId = attachmentInfo.parentIds[attachmentInfo.parentIds.length - 1];
+						const parentFileInfo = info.idsToFileInfo[parentId];
+						if (parentFileInfo?.ctime || parentFileInfo?.mtime) {
+							writeOptions = {};
+							if (parentFileInfo.ctime) writeOptions.ctime = parentFileInfo.ctime.getTime();
+							if (parentFileInfo.mtime) writeOptions.mtime = parentFileInfo.mtime.getTime();
+						}
+					}
+					
+					await this.createBinaryIfChanged(`${attachmentInfo.targetParentFolder}${attachmentInfo.nameWithExtension}`, data, writeOptions);
 					ctx.reportAttachmentSuccess(file.fullpath);
 				}
 			}

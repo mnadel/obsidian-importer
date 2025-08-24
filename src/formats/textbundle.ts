@@ -173,13 +173,8 @@ export class TextbundleImporter extends FormatImporter {
 		}
 
 		let assetFileVaultPath = `${this.attachmentsFolderPath.path}/${entry.name}`;
-		let existingFile = this.vault.getAbstractFileByPath(assetFileVaultPath);
-		if (existingFile) {
-			progress.reportSkipped(entry.name, 'the file already exists.');
-		}
-
 		let assetData = await entry.read();
-		await this.vault.createBinary(assetFileVaultPath, assetData);
+		await this.createBinaryIfChanged(assetFileVaultPath, assetData);
 		progress.reportAttachmentSuccess(entry.name);
 	}
 }
