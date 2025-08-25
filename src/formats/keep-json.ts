@@ -142,7 +142,8 @@ export class KeepImporter extends FormatImporter {
 					ctime: stat.ctimeMs,
 					mtime: stat.mtimeMs
 				};
-			} catch (e) {
+			}
+			catch (e) {
 				// Ignore stat errors
 			}
 		}
